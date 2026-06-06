@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { HitResult } from '@/engine/Scoring';
+  import type { HitResult, SectionRange } from '@/engine/Scoring';
   import { Scoring } from '@/engine/Scoring';
 
   let {
@@ -7,11 +7,28 @@
     currentTime = 0,
     duration = 8000,
     hitResults = [] as HitResult[],
-    upcomingBeats = [] as number[]
+    upcomingBeats = [] as number[],
+    section = null as SectionRange | null,
+    sectionBoundaryCrossed = null as 'enter' | 'leave' | null
   } = $props();
 
   const visibleWindowMs = 4000;
   const centerOffsetMs = 1000;
+
+  function isBeatInSection(beatIndex: number): boolean {
+    if (!section) return true;
+    return beatIndex >= section.startBeatIndex && beatIndex <= section.endBeatIndex;
+  }
+
+  function getSectionStartTime(): number | null {
+    if (!section || section.startBeatIndex < 0 || section.startBeatIndex >= referenceBeats.length) return null;
+    return referenceBeats[section.startBeatIndex];
+  }
+
+  function getSectionEndTime(): number | null {
+    if (!section || section.endBeatIndex < 0 || section.endBeatIndex >= referenceBeats.length) return null;
+    return referenceBeats[section.endBeatIndex];
+  }
 
   let viewStart = $derived(currentTime - centerOffsetMs);
   let playheadX = 25;
@@ -22,22 +39,25 @@
     return ((timeMs - viewStart) / visibleWindowMs) * 100;
   }
 
-  function getBeatClass(timeMs: number): string {
+  function getBeatClass(timeMs: number, beatIndex: number): string {
+    const inSection = isBeatInSection(beatIndex);
+    const baseClass = inSection ? '' : ' beat-outside';
+    
     const hit = hitResults.find((h) => h.referenceTime === timeMs);
     if (hit) {
-      return `beat beat-${hit.judge}`;
+      return `beat beat-${hit.judge}${baseClass}`;
     }
     if (upcomingBeats.includes(timeMs)) {
-      return 'beat beat-upcoming';
+      return `beat beat-upcoming${baseClass}`;
     }
     const distance = Math.abs(timeMs - currentTime);
     if (distance < 50) {
-      return 'beat beat-current';
+      return `beat beat-current${baseClass}`;
     }
     if (timeMs < currentTime) {
-      return 'beat beat-past';
+      return `beat beat-past${baseClass}`;
     }
-    return 'beat beat-future';
+    return `beat beat-future${baseClass}`;
   }
 
   function getHitX(result: HitResult): number {
@@ -75,11 +95,40 @@
       <div class="playhead-diamond"></div>
     </div>
 
-    {#each referenceBeats as beatTime (beatTime)}
+    {#if section}
+      {@const sectionStartTime = getSectionStartTime()}
+      {@const sectionEndTime = getSectionEndTime()}
+      {#if sectionStartTime !== null}
+        {@const startX = getXPosition(sectionStartTime)}
+        {#if startX >= -5 && startX <= 105}
+          <div class="section-boundary section-start" style="left: {startX}%">
+            <div class="boundary-line"></div>
+            <div class="boundary-label">起</div>
+          </div>
+        {/if}
+      {/if}
+      {#if sectionEndTime !== null}
+        {@const endX = getXPosition(sectionEndTime)}
+        {#if endX >= -5 && endX <= 105}
+          <div class="section-boundary section-end" style="left: {endX}%">
+            <div class="boundary-line"></div>
+            <div class="boundary-label">止</div>
+          </div>
+        {/if}
+      {/if}
+    {/if}
+
+    {#if sectionBoundaryCrossed}
+      <div class="boundary-crossed boundary-{sectionBoundaryCrossed}">
+        {sectionBoundaryCrossed === 'enter' ? '进入练习段' : '离开练习段'}
+      </div>
+    {/if}
+
+    {#each referenceBeats as beatTime, beatIndex (beatTime)}
       {@const x = getXPosition(beatTime)}
       {@const hit = hitResults.find((h) => h.referenceTime === beatTime)}
       {#if x >= -5 && x <= 105}
-        <div class={getBeatClass(beatTime)} style="left: {x}%">
+        <div class={getBeatClass(beatTime, beatIndex)} style="left: {x}%">
           <div class="beat-line"></div>
           {#if hit}
             <div class="beat-result" style="color: {Scoring.getJudgeColor(hit.judge)}">
@@ -242,6 +291,105 @@
   height: 12px;
   background: var(--accent-red);
   box-shadow: var(--shadow-glow-red);
+}
+
+.section-boundary {
+  position: absolute;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translateX(-50%);
+  z-index: 6;
+}
+
+.section-boundary .boundary-line {
+  width: 3px;
+  height: 100%;
+  background: var(--accent-green);
+  box-shadow: 0 0 10px var(--accent-green);
+  border-radius: 2px;
+}
+
+.section-end .boundary-line {
+  background: var(--accent-red);
+  box-shadow: 0 0 10px var(--accent-red);
+}
+
+.boundary-label {
+  position: absolute;
+  top: -20px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent-green);
+  color: var(--bg-primary);
+  letter-spacing: 1px;
+}
+
+.section-end .boundary-label {
+  background: var(--accent-red);
+}
+
+.boundary-crossed {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  z-index: 20;
+  animation: boundary-pop 0.8s ease-out forwards;
+  pointer-events: none;
+}
+
+.boundary-enter {
+  background: var(--accent-green);
+  color: var(--bg-primary);
+  box-shadow: 0 0 30px var(--accent-green);
+}
+
+.boundary-leave {
+  background: var(--accent-red);
+  color: white;
+  box-shadow: 0 0 30px var(--accent-red);
+}
+
+@keyframes boundary-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.1);
+  }
+  40% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.beat-outside .beat-line {
+  opacity: 0.25 !important;
+  filter: grayscale(50%);
+  box-shadow: none !important;
+}
+
+.beat-outside .beat-result {
+  opacity: 0.3;
 }
 
 .beat {

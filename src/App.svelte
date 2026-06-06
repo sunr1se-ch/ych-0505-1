@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import BeatTimeline from '@/components/BeatTimeline.svelte';
   import { AudioEngine } from '@/engine/AudioEngine';
-  import { Scoring, type HitResult, type ScoringStats, type JudgeResult } from '@/engine/Scoring';
+  import { Scoring, type HitResult, type ScoringStats, type JudgeResult, type SectionRange } from '@/engine/Scoring';
   import referenceBeatsData from '@/data/luogu-a.json';
 
   const audioEngine = new AudioEngine();
@@ -22,6 +22,63 @@
   let isNewBest = $state(false);
   let lastHitAnimation = $state<{ judge: JudgeResult; delta: number } | null>(null);
 
+  type PracticeMode = 'full' | 'section';
+  let practiceMode = $state<PracticeMode>('full');
+  let sectionStartBeat = $state<number>(1);
+  let sectionEndBeat = $state<number>(referenceBeatsData.length);
+  let sectionBoundaryCrossed = $state<'enter' | 'leave' | null>(null);
+  let lastInSection = $state<boolean>(true);
+
+  function getCurrentSection(): SectionRange | null {
+    if (practiceMode !== 'section') return null;
+    return {
+      startBeatIndex: sectionStartBeat - 1,
+      endBeatIndex: sectionEndBeat - 1
+    };
+  }
+
+  function isTimeInSection(time: number): boolean {
+    const section = getCurrentSection();
+    if (!section) return true;
+    const startTime = referenceBeats[section.startBeatIndex];
+    const endTime = referenceBeats[section.endBeatIndex];
+    return time >= startTime && time <= endTime;
+  }
+
+  let boundaryCrossedTimeout: number | null = null;
+
+  function checkSectionBoundary(time: number): void {
+    const section = getCurrentSection();
+    if (!section) {
+      lastInSection = true;
+      return;
+    }
+
+    const inSection = isTimeInSection(time);
+    
+    if (inSection !== lastInSection) {
+      if (boundaryCrossedTimeout) {
+        clearTimeout(boundaryCrossedTimeout);
+      }
+      
+      sectionBoundaryCrossed = inSection ? 'enter' : 'leave';
+      
+      boundaryCrossedTimeout = window.setTimeout(() => {
+        sectionBoundaryCrossed = null;
+      }, 800);
+    }
+    
+    lastInSection = inSection;
+  }
+
+  function validateSection(): boolean {
+    const maxBeat = referenceBeats.length;
+    if (sectionStartBeat < 1 || sectionStartBeat > maxBeat) return false;
+    if (sectionEndBeat < 1 || sectionEndBeat > maxBeat) return false;
+    if (sectionStartBeat > sectionEndBeat) return false;
+    return true;
+  }
+
   const AUDIO_URL = '/loops/luogu-a.ogg';
   const MISS_THRESHOLD_MS = 120;
 
@@ -33,15 +90,24 @@
     if (isPlaying && currentTime >= 0) {
       const windowStart = currentTime - 200;
       const windowEnd = currentTime + 1000;
-      upcomingBeats = referenceBeats.filter(
-        (t) => t >= windowStart && t <= windowEnd
-      );
+      const section = getCurrentSection();
+      upcomingBeats = referenceBeats.filter((t, i) => {
+        if (t < windowStart || t > windowEnd) return false;
+        if (section && (i < section.startBeatIndex || i > section.endBeatIndex)) return false;
+        return true;
+      });
     } else {
       upcomingBeats = [];
     }
   });
 
+  $effect(() => {
+    const section = getCurrentSection();
+    bestScore = scoring.loadBestScore(section);
+  });
+
   onMount(async () => {
+    scoring.setSection(getCurrentSection());
     bestScore = scoring.loadBestScore();
     isLoading = true;
 
@@ -57,6 +123,7 @@
 
     audioEngine.onTimeUpdate = (time: number) => {
       currentTime = time;
+      checkSectionBoundary(time);
       checkMissedBeats(time);
     };
 
@@ -85,9 +152,11 @@
         const existing = hitResults.find((h) => h.beatIndex === i);
         if (!existing) {
           const miss = scoring.registerMiss(i, beatTime);
-          hitResults = [...hitResults, miss];
-          stats = scoring.getStats();
-          showJudgement('miss', 999);
+          if (miss) {
+            hitResults = [...hitResults, miss];
+            stats = scoring.getStats();
+            showJudgement('miss', 999);
+          }
         }
       }
     }
@@ -131,11 +200,19 @@
   }
 
   function startTraining(): void {
+    if (!validateSection()) {
+      return;
+    }
+
+    const section = getCurrentSection();
+    scoring.setSection(section);
     scoring.reset();
     hitResults = [];
     stats = scoring.getStats();
     showResultPopup = false;
     isNewBest = false;
+    lastInSection = false;
+    sectionBoundaryCrossed = null;
 
     audioEngine.startLoop(0);
     isPlaying = true;
@@ -147,8 +224,9 @@
 
     const finalStats = scoring.getStats();
     if (finalStats.totalHits > 0) {
-      isNewBest = scoring.saveBestScore(finalStats);
-      bestScore = scoring.loadBestScore();
+      const section = getCurrentSection();
+      isNewBest = scoring.saveBestScore(finalStats, section);
+      bestScore = scoring.loadBestScore(section);
     }
 
     showResultPopup = true;
@@ -165,11 +243,16 @@
   }
 
   function resetStats(): void {
+    const section = getCurrentSection();
+    scoring.setSection(section);
     scoring.reset();
     hitResults = [];
     stats = scoring.getStats();
     showResultPopup = false;
     currentTime = 0;
+    lastInSection = false;
+    sectionBoundaryCrossed = null;
+    bestScore = scoring.loadBestScore(section);
   }
 
   function getJudgeLabel(judge: JudgeResult): string {
@@ -268,6 +351,72 @@
       </div>
     {/if}
 
+    <section class="section-selector-section">
+      <div class="section-selector-card">
+        <div class="section-selector-header">
+          <span class="section-label">练习范围</span>
+          {#if isPlaying}
+            <span class="section-locked-hint">训练中不可修改</span>
+          {/if}
+        </div>
+        <div class="section-mode-toggle">
+          <button
+            class="mode-btn {practiceMode === 'full' ? 'active' : ''}"
+            class:disabled={isPlaying}
+            onclick={() => { if (!isPlaying) practiceMode = 'full'; }}
+            disabled={isPlaying}
+          >
+            全曲
+          </button>
+          <button
+            class="mode-btn {practiceMode === 'section' ? 'active' : ''}"
+            class:disabled={isPlaying}
+            onclick={() => { if (!isPlaying) practiceMode = 'section'; }}
+            disabled={isPlaying}
+          >
+            段落选练
+          </button>
+        </div>
+        {#if practiceMode === 'section'}
+          <div class="section-inputs">
+            <div class="input-group">
+              <label for="section-start-beat">起始节拍</label>
+              <input
+                id="section-start-beat"
+                type="number"
+                min="1"
+                max={referenceBeats.length}
+                bind:value={sectionStartBeat}
+                class="beat-input"
+                class:input-error={!validateSection()}
+                disabled={isPlaying}
+              />
+            </div>
+            <span class="input-separator">—</span>
+            <div class="input-group">
+              <label for="section-end-beat">结束节拍</label>
+              <input
+                id="section-end-beat"
+                type="number"
+                min="1"
+                max={referenceBeats.length}
+                bind:value={sectionEndBeat}
+                class="beat-input"
+                class:input-error={!validateSection()}
+                disabled={isPlaying}
+              />
+            </div>
+            <span class="beat-count-hint">
+              共 {sectionEndBeat - sectionStartBeat + 1} 拍
+            </span>
+          </div>
+          {#if !validateSection()}
+            <div class="validation-error">请输入有效的节拍范围（1-{referenceBeats.length}）</div>
+          {/if}
+        {/if}
+      </div>
+    </section>
+
     <section class="timeline-section">
       <BeatTimeline
         referenceBeats={referenceBeats}
@@ -275,6 +424,8 @@
         duration={audioEngine.duration || 8000}
         hitResults={hitResults}
         upcomingBeats={upcomingBeats}
+        section={getCurrentSection()}
+        sectionBoundaryCrossed={sectionBoundaryCrossed}
       />
     </section>
 
@@ -875,6 +1026,153 @@
 
 .best-stat-value.gold {
   color: var(--accent-gold);
+}
+
+.section-selector-section {
+  margin-bottom: 8px;
+}
+
+.section-selector-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 16px 20px;
+  transition: all 0.3s ease;
+}
+
+.section-selector-card:hover {
+  border-color: var(--accent-gold);
+}
+
+.section-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.section-locked-hint {
+  font-size: 11px;
+  color: var(--accent-red);
+  font-weight: 600;
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.section-mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 1px;
+}
+
+.mode-btn:hover:not(:disabled):not(.active) {
+  border-color: var(--accent-gold);
+  color: var(--text-primary);
+}
+
+.mode-btn.active {
+  background: linear-gradient(135deg, var(--accent-gold) 0%, #f4d03f 100%);
+  border-color: var(--accent-gold);
+  color: var(--bg-primary);
+  box-shadow: 0 4px 15px rgba(212, 175, 55, 0.3);
+}
+
+.mode-btn.disabled,
+.mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.section-inputs {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.input-group label {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+}
+
+.beat-input {
+  width: 80px;
+  padding: 8px 12px;
+  font-size: 16px;
+  font-weight: 600;
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  transition: all 0.2s ease;
+}
+
+.beat-input:focus {
+  outline: none;
+  border-color: var(--accent-gold);
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.2);
+}
+
+.beat-input.input-error {
+  border-color: var(--accent-red);
+  box-shadow: 0 0 0 3px rgba(196, 30, 58, 0.2);
+}
+
+.beat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.input-separator {
+  font-size: 18px;
+  color: var(--text-muted);
+  font-weight: 700;
+  padding-bottom: 8px;
+}
+
+.beat-count-hint {
+  font-size: 12px;
+  color: var(--accent-gold);
+  font-weight: 600;
+  padding-bottom: 8px;
+  margin-left: auto;
+}
+
+.validation-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--accent-red);
+  font-weight: 600;
 }
 
 .result-overlay {

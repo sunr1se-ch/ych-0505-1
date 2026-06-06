@@ -21,7 +21,19 @@ export interface ScoringStats {
 const PERFECT_THRESHOLD = 40;
 const GOOD_THRESHOLD = 90;
 const WINDOW_MS = 150;
-const STORAGE_KEY = 'luogu_beat_best_score';
+const STORAGE_KEY_PREFIX = 'luogu_beat_best_score';
+
+export interface SectionRange {
+  startBeatIndex: number;
+  endBeatIndex: number;
+}
+
+function getStorageKey(section: SectionRange | null): string {
+  if (!section) {
+    return `${STORAGE_KEY_PREFIX}_full`;
+  }
+  return `${STORAGE_KEY_PREFIX}_${section.startBeatIndex + 1}_${section.endBeatIndex + 1}`;
+}
 
 export class Scoring {
   private hitResults: HitResult[] = [];
@@ -32,12 +44,26 @@ export class Scoring {
   private missCount: number = 0;
   private totalDeltaAbs: number = 0;
   private matchedBeats: Set<number> = new Set();
+  private currentSection: SectionRange | null = null;
 
   static judge(deltaMs: number): JudgeResult {
     const absDelta = Math.abs(deltaMs);
     if (absDelta <= PERFECT_THRESHOLD) return 'perfect';
     if (absDelta <= GOOD_THRESHOLD) return 'good';
     return 'miss';
+  }
+
+  setSection(section: SectionRange | null): void {
+    this.currentSection = section;
+  }
+
+  getSection(): SectionRange | null {
+    return this.currentSection;
+  }
+
+  isBeatInSection(beatIndex: number): boolean {
+    if (!this.currentSection) return true;
+    return beatIndex >= this.currentSection.startBeatIndex && beatIndex <= this.currentSection.endBeatIndex;
   }
 
   registerHit(hitTime: number, referenceTimes: number[]): HitResult | null {
@@ -48,6 +74,7 @@ export class Scoring {
 
     for (let i = 0; i < referenceTimes.length; i++) {
       if (this.matchedBeats.has(i)) continue;
+      if (!this.isBeatInSection(i)) continue;
       
       const refTime = referenceTimes[i];
       const diff = Math.abs(hitTime - refTime);
@@ -95,7 +122,12 @@ export class Scoring {
     return result;
   }
 
-  registerMiss(beatIndex: number, referenceTime: number): HitResult {
+  registerMiss(beatIndex: number, referenceTime: number): HitResult | null {
+    if (!this.isBeatInSection(beatIndex)) {
+      this.matchedBeats.add(beatIndex);
+      return null;
+    }
+
     if (this.matchedBeats.has(beatIndex)) {
       const existing = this.hitResults.find(h => h.beatIndex === beatIndex);
       if (existing) return existing;
@@ -147,21 +179,21 @@ export class Scoring {
     this.matchedBeats.clear();
   }
 
-  saveBestScore(stats: ScoringStats): boolean {
-    const existing = this.loadBestScore();
+  saveBestScore(stats: ScoringStats, section: SectionRange | null = this.currentSection): boolean {
+    const existing = this.loadBestScore(section);
     const currentScore = this.calculateScore(stats);
     const existingScore = existing ? this.calculateScore(existing) : -1;
 
     if (currentScore > existingScore) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
+      localStorage.setItem(getStorageKey(section), JSON.stringify(stats));
       return true;
     }
     return false;
   }
 
-  loadBestScore(): ScoringStats | null {
+  loadBestScore(section: SectionRange | null = this.currentSection): ScoringStats | null {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(getStorageKey(section));
       if (stored) {
         return JSON.parse(stored) as ScoringStats;
       }
