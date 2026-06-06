@@ -215,8 +215,8 @@
       <div class="stats-grid">
         <div class="stat-card combo-card">
           <div class="stat-label">当前连击</div>
-          <div class="stat-value combo-value" class:combo-active={stats.maxCombo > 0}>
-            {stats.maxCombo}
+          <div class="stat-value combo-value" class:combo-active={stats.combo > 0}>
+            {stats.combo}
             <span class="combo-x">COMBO</span>
           </div>
         </div>

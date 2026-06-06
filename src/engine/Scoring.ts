@@ -71,6 +71,7 @@ export class Scoring {
 
     if (judge === 'miss') {
       this.missCount++;
+      this.combo = 0;
     } else {
       this.combo++;
       this.maxCombo = Math.max(this.maxCombo, this.combo);
@@ -102,6 +103,7 @@ export class Scoring {
 
     this.matchedBeats.add(beatIndex);
     this.missCount++;
+    this.combo = 0;
 
     const result: HitResult = {
       referenceTime,

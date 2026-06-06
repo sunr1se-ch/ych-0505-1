@@ -25,9 +25,6 @@
   function getBeatClass(timeMs: number): string {
     const hit = hitResults.find((h) => h.referenceTime === timeMs);
     if (hit) {
-      if (hit.judge === 'miss') {
-        return 'beat beat-past';
-      }
       return `beat beat-${hit.judge}`;
     }
     if (upcomingBeats.includes(timeMs)) {
